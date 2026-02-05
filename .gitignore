@@ -4,6 +4,9 @@ createpackage/createpackageV2/Build/
 createpackage/createpackageV2/Output/
 createpackage/createpackageV2/Tools/
 
+# Local configuration (user-specific)
+local-config.ps1
+
 # NuGet packages
 *.nupkg
 packages/
