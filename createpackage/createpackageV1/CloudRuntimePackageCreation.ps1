@@ -1,0 +1,299 @@
+function Add-CloudRuntimeDeployablePackage {
+    [Cmdletbinding()]
+	param(
+		[Parameter(Mandatory)]
+		[string]$buildOutputLocation,
+		[Parameter(Mandatory)]
+		[string]$platVersionNumber,
+        [Parameter(Mandatory)]
+		[string]$appVersionNumber,
+        [Parameter(Mandatory)]
+		[string]$packageOutputLocation
+	)
+
+	try
+    {
+        Write-Host $PSScriptRoot
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\System.Text.Encodings.Web.dll"         #"System.Text.Encodings.Web.6.0.0\lib\net461\System.Text.Encodings.Web.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\System.Threading.Tasks.Extensions.dll" #"System.Threading.Tasks.Extensions.4.5.4\lib\net461\System.Threading.Tasks.Extensions.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\System.Memory.dll"                     #"System.Memory.4.5.4\lib\net461\System.Memory.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Bcl.AsyncInterfaces.dll"     #"Microsoft.Bcl.AsyncInterfaces.6.0.0\lib\net461\Microsoft.Bcl.AsyncInterfaces.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\System.Text.Json.dll"                  #"System.Text.Json.6.0.2\lib\net461\System.Text.Json.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Xrm.Sdk.dll"                 #"Microsoft.CrmSdk.CoreAssemblies.9.0.2.45\lib\net462\Microsoft.Xrm.Sdk.dll"
+    }
+    catch
+    {
+        $_.Exception.LoaderExceptions
+    }
+    try{
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.IdentityModel.Clients.ActiveDirectory.dll"                          #"Microsoft.IdentityModel.Clients.ActiveDirectory.3.19.8\lib\net45\Microsoft.IdentityModel.Clients.ActiveDirectory.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Xrm.Tooling.PackageDeployment.CrmPackageExtentionBase.dll"          #"Microsoft.CrmSdk.XrmTooling.PackageDeployment.Core.9.1.0.116\lib\net462\Microsoft.Xrm.Tooling.PackageDeployment.CrmPackageExtentionBase.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Xrm.Tooling.PackageDeployment.CrmPackageCore.FinanceOperations.dll" #"Microsoft.CrmSdk.XrmTooling.PackageDeployment.Core.9.1.0.116\lib\net462\Microsoft.Xrm.Tooling.PackageDeployment.CrmPackageCore.FinanceOperations.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Xrm.Tooling.PackageDeployment.CrmPackageCore.dll"                   #"Microsoft.CrmSdk.XrmTooling.PackageDeployment.Core.9.1.0.116\lib\net462\Microsoft.Xrm.Tooling.PackageDeployment.CrmPackageCore.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Dynamics.VSExtension.Shared.dll"                                    #"Microsoft.Dynamics.VSExtension.Shared.7.0.30011\lib\net472\Microsoft.Dynamics.VSExtension.Shared.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.ApplicationInsights.dll"                                            #"Microsoft.ApplicationInsights.2.21.0\lib\net46\Microsoft.ApplicationInsights.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.PowerPlatform.VSShared.Util.dll"                                                   #"PowerPlatSharedLibrary.1.0.0\lib\net472\PowerPlatSharedLibrary.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Xrm.Tooling.Connector.dll"                                          #"Microsoft.CrmSdk.XrmTooling.CoreAssembly.9.1.1.27\lib\net462\Microsoft.Xrm.Tooling.Connector.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Newtonsoft.Json.dll"                                                          #"Newtonsoft.Json.13.0.1\lib\net45\Newtonsoft.Json.dll"
+        Add-Type -Path "$PSScriptRoot\CloudRuntimeDlls\Microsoft.Dynamics.AX.DesignTime.Telemetry2.dll"                              #"Microsoft.Dynamics.AX.DesignTime.Telemetry2.7.0.30004\lib\net462\Microsoft.Dynamics.AX.DesignTime.Telemetry2.dll"
+    }
+    catch
+    {
+        $_.Exception.LoaderExceptions
+    }
+    
+    $assemblies = ("System", "$PSScriptRoot\CloudRuntimeDlls\Microsoft.PowerPlatform.VSShared.Util.dll")
+        
+    $id = get-random
+    $code = 
+@"
+    using Microsoft.PowerPlatform.VSShared.Util;
+    using System;
+    using System.Threading.Tasks;
+    namespace PackageCreation
+    {
+        public class Program$id
+        {
+            public static async Task<string> MainCreate(string[] args)
+            {
+                var createPkg = new PipelineOperation();
+                var pkgLoc = await createPkg.PerformCreatePackageOperation(args[0], args[1], args[2], Guid.Empty.ToString());
+                return pkgLoc;
+            }
+        }
+    }
+"@
+
+    try
+    { 
+        Write-Host "Starting package creation:"
+        Add-Type -ReferencedAssemblies $assemblies -TypeDefinition $code -Language CSharp
+        [System.AppContext]::SetSwitch('Switch.System.IO.Compression.ZipFile.UseBackslash', $false)
+        Invoke-Expression "[PackageCreation.Program$id]::MainCreate(@('$buildOutputLocation', '$platVersionNumber', '$appVersionNumber'))" | Tee-Object -Var packageLocation
+        Write-Host $packageLocation.Result
+        Write-Host "Ending package creation"
+        Write-Host "Placing package to package output location"
+        Copy-Item -Path $packageLocation.Result -Destination $packageOutputLocation -Recurse
+    }
+    catch
+    {
+        $_.Exception
+    }
+} 
+
+# SIG # Begin signature block
+# MIIoDAYJKoZIhvcNAQcCoIIn/TCCJ/kCAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCDmGskG6vepOcxF
+# dXYz0XczoSIwXGEO1ut2cLEyduLowKCCDXYwggX0MIID3KADAgECAhMzAAAEBGx0
+# Bv9XKydyAAAAAAQEMA0GCSqGSIb3DQEBCwUAMH4xCzAJBgNVBAYTAlVTMRMwEQYD
+# VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNpZ25p
+# bmcgUENBIDIwMTEwHhcNMjQwOTEyMjAxMTE0WhcNMjUwOTExMjAxMTE0WjB0MQsw
+# CQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9u
+# ZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMR4wHAYDVQQDExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIB
+# AQC0KDfaY50MDqsEGdlIzDHBd6CqIMRQWW9Af1LHDDTuFjfDsvna0nEuDSYJmNyz
+# NB10jpbg0lhvkT1AzfX2TLITSXwS8D+mBzGCWMM/wTpciWBV/pbjSazbzoKvRrNo
+# DV/u9omOM2Eawyo5JJJdNkM2d8qzkQ0bRuRd4HarmGunSouyb9NY7egWN5E5lUc3
+# a2AROzAdHdYpObpCOdeAY2P5XqtJkk79aROpzw16wCjdSn8qMzCBzR7rvH2WVkvF
+# HLIxZQET1yhPb6lRmpgBQNnzidHV2Ocxjc8wNiIDzgbDkmlx54QPfw7RwQi8p1fy
+# 4byhBrTjv568x8NGv3gwb0RbAgMBAAGjggFzMIIBbzAfBgNVHSUEGDAWBgorBgEE
+# AYI3TAgBBggrBgEFBQcDAzAdBgNVHQ4EFgQU8huhNbETDU+ZWllL4DNMPCijEU4w
+# RQYDVR0RBD4wPKQ6MDgxHjAcBgNVBAsTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEW
+# MBQGA1UEBRMNMjMwMDEyKzUwMjkyMzAfBgNVHSMEGDAWgBRIbmTlUAXTgqoXNzci
+# tW2oynUClTBUBgNVHR8ETTBLMEmgR6BFhkNodHRwOi8vd3d3Lm1pY3Jvc29mdC5j
+# b20vcGtpb3BzL2NybC9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3JsMGEG
+# CCsGAQUFBwEBBFUwUzBRBggrBgEFBQcwAoZFaHR0cDovL3d3dy5taWNyb3NvZnQu
+# Y29tL3BraW9wcy9jZXJ0cy9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3J0
+# MAwGA1UdEwEB/wQCMAAwDQYJKoZIhvcNAQELBQADggIBAIjmD9IpQVvfB1QehvpC
+# Ge7QeTQkKQ7j3bmDMjwSqFL4ri6ae9IFTdpywn5smmtSIyKYDn3/nHtaEn0X1NBj
+# L5oP0BjAy1sqxD+uy35B+V8wv5GrxhMDJP8l2QjLtH/UglSTIhLqyt8bUAqVfyfp
+# h4COMRvwwjTvChtCnUXXACuCXYHWalOoc0OU2oGN+mPJIJJxaNQc1sjBsMbGIWv3
+# cmgSHkCEmrMv7yaidpePt6V+yPMik+eXw3IfZ5eNOiNgL1rZzgSJfTnvUqiaEQ0X
+# dG1HbkDv9fv6CTq6m4Ty3IzLiwGSXYxRIXTxT4TYs5VxHy2uFjFXWVSL0J2ARTYL
+# E4Oyl1wXDF1PX4bxg1yDMfKPHcE1Ijic5lx1KdK1SkaEJdto4hd++05J9Bf9TAmi
+# u6EK6C9Oe5vRadroJCK26uCUI4zIjL/qG7mswW+qT0CW0gnR9JHkXCWNbo8ccMk1
+# sJatmRoSAifbgzaYbUz8+lv+IXy5GFuAmLnNbGjacB3IMGpa+lbFgih57/fIhamq
+# 5VhxgaEmn/UjWyr+cPiAFWuTVIpfsOjbEAww75wURNM1Imp9NJKye1O24EspEHmb
+# DmqCUcq7NqkOKIG4PVm3hDDED/WQpzJDkvu4FrIbvyTGVU01vKsg4UfcdiZ0fQ+/
+# V0hf8yrtq9CkB8iIuk5bBxuPMIIHejCCBWKgAwIBAgIKYQ6Q0gAAAAAAAzANBgkq
+# hkiG9w0BAQsFADCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
+# EDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlv
+# bjEyMDAGA1UEAxMpTWljcm9zb2Z0IFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
+# IDIwMTEwHhcNMTEwNzA4MjA1OTA5WhcNMjYwNzA4MjEwOTA5WjB+MQswCQYDVQQG
+# EwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwG
+# A1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSgwJgYDVQQDEx9NaWNyb3NvZnQg
+# Q29kZSBTaWduaW5nIFBDQSAyMDExMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIIC
+# CgKCAgEAq/D6chAcLq3YbqqCEE00uvK2WCGfQhsqa+laUKq4BjgaBEm6f8MMHt03
+# a8YS2AvwOMKZBrDIOdUBFDFC04kNeWSHfpRgJGyvnkmc6Whe0t+bU7IKLMOv2akr
+# rnoJr9eWWcpgGgXpZnboMlImEi/nqwhQz7NEt13YxC4Ddato88tt8zpcoRb0Rrrg
+# OGSsbmQ1eKagYw8t00CT+OPeBw3VXHmlSSnnDb6gE3e+lD3v++MrWhAfTVYoonpy
+# 4BI6t0le2O3tQ5GD2Xuye4Yb2T6xjF3oiU+EGvKhL1nkkDstrjNYxbc+/jLTswM9
+# sbKvkjh+0p2ALPVOVpEhNSXDOW5kf1O6nA+tGSOEy/S6A4aN91/w0FK/jJSHvMAh
+# dCVfGCi2zCcoOCWYOUo2z3yxkq4cI6epZuxhH2rhKEmdX4jiJV3TIUs+UsS1Vz8k
+# A/DRelsv1SPjcF0PUUZ3s/gA4bysAoJf28AVs70b1FVL5zmhD+kjSbwYuER8ReTB
+# w3J64HLnJN+/RpnF78IcV9uDjexNSTCnq47f7Fufr/zdsGbiwZeBe+3W7UvnSSmn
+# Eyimp31ngOaKYnhfsi+E11ecXL93KCjx7W3DKI8sj0A3T8HhhUSJxAlMxdSlQy90
+# lfdu+HggWCwTXWCVmj5PM4TasIgX3p5O9JawvEagbJjS4NaIjAsCAwEAAaOCAe0w
+# ggHpMBAGCSsGAQQBgjcVAQQDAgEAMB0GA1UdDgQWBBRIbmTlUAXTgqoXNzcitW2o
+# ynUClTAZBgkrBgEEAYI3FAIEDB4KAFMAdQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYD
+# VR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBRyLToCMZBDuRQFTuHqp8cx0SOJNDBa
+# BgNVHR8EUzBRME+gTaBLhklodHRwOi8vY3JsLm1pY3Jvc29mdC5jb20vcGtpL2Ny
+# bC9wcm9kdWN0cy9NaWNSb29DZXJBdXQyMDExXzIwMTFfMDNfMjIuY3JsMF4GCCsG
+# AQUFBwEBBFIwUDBOBggrBgEFBQcwAoZCaHR0cDovL3d3dy5taWNyb3NvZnQuY29t
+# L3BraS9jZXJ0cy9NaWNSb29DZXJBdXQyMDExXzIwMTFfMDNfMjIuY3J0MIGfBgNV
+# HSAEgZcwgZQwgZEGCSsGAQQBgjcuAzCBgzA/BggrBgEFBQcCARYzaHR0cDovL3d3
+# dy5taWNyb3NvZnQuY29tL3BraW9wcy9kb2NzL3ByaW1hcnljcHMuaHRtMEAGCCsG
+# AQUFBwICMDQeMiAdAEwAZQBnAGEAbABfAHAAbwBsAGkAYwB5AF8AcwB0AGEAdABl
+# AG0AZQBuAHQALiAdMA0GCSqGSIb3DQEBCwUAA4ICAQBn8oalmOBUeRou09h0ZyKb
+# C5YR4WOSmUKWfdJ5DJDBZV8uLD74w3LRbYP+vj/oCso7v0epo/Np22O/IjWll11l
+# hJB9i0ZQVdgMknzSGksc8zxCi1LQsP1r4z4HLimb5j0bpdS1HXeUOeLpZMlEPXh6
+# I/MTfaaQdION9MsmAkYqwooQu6SpBQyb7Wj6aC6VoCo/KmtYSWMfCWluWpiW5IP0
+# wI/zRive/DvQvTXvbiWu5a8n7dDd8w6vmSiXmE0OPQvyCInWH8MyGOLwxS3OW560
+# STkKxgrCxq2u5bLZ2xWIUUVYODJxJxp/sfQn+N4sOiBpmLJZiWhub6e3dMNABQam
+# ASooPoI/E01mC8CzTfXhj38cbxV9Rad25UAqZaPDXVJihsMdYzaXht/a8/jyFqGa
+# J+HNpZfQ7l1jQeNbB5yHPgZ3BtEGsXUfFL5hYbXw3MYbBL7fQccOKO7eZS/sl/ah
+# XJbYANahRr1Z85elCUtIEJmAH9AAKcWxm6U/RXceNcbSoqKfenoi+kiVH6v7RyOA
+# 9Z74v2u3S5fi63V4GuzqN5l5GEv/1rMjaHXmr/r8i+sLgOppO6/8MO0ETI7f33Vt
+# Y5E90Z1WTk+/gFcioXgRMiF670EKsT/7qMykXcGhiJtXcVZOSEXAQsmbdlsKgEhr
+# /Xmfwb1tbWrJUnMTDXpQzTGCGewwghnoAgEBMIGVMH4xCzAJBgNVBAYTAlVTMRMw
+# EQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVN
+# aWNyb3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNp
+# Z25pbmcgUENBIDIwMTECEzMAAAQEbHQG/1crJ3IAAAAABAQwDQYJYIZIAWUDBAIB
+# BQCggZAwGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwLwYJKoZIhvcNAQkEMSIE
+# IIUcmRnobwX+6yF3aI8hLxPWNpxoLkeWdKODajMfucR5MEIGCisGAQQBgjcCAQwx
+# NDAyoBSAEgBNAGkAYwByAG8AcwBvAGYAdKEagBhodHRwOi8vd3d3Lm1pY3Jvc29m
+# dC5jb20wDQYJKoZIhvcNAQEBBQAEggEAFwIMQjPOc4ykI3wxSmD8c4xI7EPrSwIg
+# X42UlLq5ZJ1+AAmXNHl8aUTLLAmPG/LfkY5yfOGXMLIwsSM0rPj3Ib9Xf9jT21nr
+# XuIMtKC0t4bQO+FNQ71omH2961edZrrWraccbxgGwvWtX0cadkQhyojcbAOsOgNb
+# F41mKh+ACECsKe3SLbQhmhavYbtbsMS2jshyg23V5/L8pQfWCYpPojB92QVjW2+6
+# ym4jAGakJDgsfzPSvQMC459T5IqWZaQ9dIUNp+gpTUFoPGihYacBuNeSGdzZdSZa
+# BkpRaSyWzL6P7Xug8TjQmYyhLGN45SiUW8YhnnaguNSubYim1MS9IqGCF5QwgheQ
+# BgorBgEEAYI3AwMBMYIXgDCCF3wGCSqGSIb3DQEHAqCCF20wghdpAgEDMQ8wDQYJ
+# YIZIAWUDBAIBBQAwggFSBgsqhkiG9w0BCRABBKCCAUEEggE9MIIBOQIBAQYKKwYB
+# BAGEWQoDATAxMA0GCWCGSAFlAwQCAQUABCAtfcbySMgFSsBgr3MjQRlMcp4LDgHl
+# BmUb6YO6oaIOMAIGZ/gcXNp3GBMyMDI1MDQxODAwMTkxMS4yMDRaMASAAgH0oIHR
+# pIHOMIHLMQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UE
+# BxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSUwIwYD
+# VQQLExxNaWNyb3NvZnQgQW1lcmljYSBPcGVyYXRpb25zMScwJQYDVQQLEx5uU2hp
+# ZWxkIFRTUyBFU046MzcwMy0wNUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBU
+# aW1lLVN0YW1wIFNlcnZpY2WgghHqMIIHIDCCBQigAwIBAgITMwAAAgpHshTZ7rKz
+# DwABAAACCjANBgkqhkiG9w0BAQsFADB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMK
+# V2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0
+# IENvcnBvcmF0aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0Eg
+# MjAxMDAeFw0yNTAxMzAxOTQyNTdaFw0yNjA0MjIxOTQyNTdaMIHLMQswCQYDVQQG
+# EwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwG
+# A1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSUwIwYDVQQLExxNaWNyb3NvZnQg
+# QW1lcmljYSBPcGVyYXRpb25zMScwJQYDVQQLEx5uU2hpZWxkIFRTUyBFU046Mzcw
+# My0wNUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1lLVN0YW1wIFNlcnZp
+# Y2UwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQCy7NzwEpb7BpwAk9LJ
+# 00Xq30TcTjcwNZ80TxAtAbhSaJ2kwnJA1Au/Do9/fEBjAHv6Mmtt3fmPDeIJnQ7V
+# BeIq8RcfjcjrbPIg3wA5v5MQflPNSBNOvcXRP+fZnAy0ELDzfnJHnCkZNsQUZ7GF
+# 7LxULTKOYY2YJw4TrmcHohkY6DjCZyxhqmGQwwdbjoPWRbYu/ozFem/yfJPyjVBq
+# l1068bcVh58A8c5CD6TWN/L3u+Ny+7O8+Dver6qBT44Ey7pfPZMZ1Hi7yvCLv5LG
+# zSB6o2OD5GIZy7z4kh8UYHdzjn9Wx+QZ2233SJQKtZhpI7uHf3oMTg0zanQfz7mg
+# udefmGBrQEg1ox3n+3Tizh0D9zVmNQP9sFjsPQtNGZ9ID9H8A+kFInx4mrSxA2Sy
+# GMOQcxlGM30ktIKM3iqCuFEU9CHVMpN94/1fl4T6PonJ+/oWJqFlatYuMKv2Z8ui
+# prnFcAxCpOsDIVBO9K1vHeAMiQQUlcE9CD536I1YLnmO2qHagPPmXhdOGrHUnCUt
+# op21elukHh75q/5zH+OnNekp5udpjQNZCviYAZdHsLnkU0NfUAr6r1UqDcSq1yf5
+# RiwimB8SjsdmHll4gPjmqVi0/rmnM1oAEQm3PyWcTQQibYLiuKN7Y4io5bJTVwm+
+# vRRbpJ5UL/D33C//7qnHbeoWBQIDAQABo4IBSTCCAUUwHQYDVR0OBBYEFAKvF0EE
+# j4AyPfY8W/qrsAvftZwkMB8GA1UdIwQYMBaAFJ+nFV0AXmJdg/Tl0mWnG1M1Gely
+# MF8GA1UdHwRYMFYwVKBSoFCGTmh0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2lv
+# cHMvY3JsL01pY3Jvc29mdCUyMFRpbWUtU3RhbXAlMjBQQ0ElMjAyMDEwKDEpLmNy
+# bDBsBggrBgEFBQcBAQRgMF4wXAYIKwYBBQUHMAKGUGh0dHA6Ly93d3cubWljcm9z
+# b2Z0LmNvbS9wa2lvcHMvY2VydHMvTWljcm9zb2Z0JTIwVGltZS1TdGFtcCUyMFBD
+# QSUyMDIwMTAoMSkuY3J0MAwGA1UdEwEB/wQCMAAwFgYDVR0lAQH/BAwwCgYIKwYB
+# BQUHAwgwDgYDVR0PAQH/BAQDAgeAMA0GCSqGSIb3DQEBCwUAA4ICAQCwk3PW0Cyj
+# OaqXCMOusTde7ep2CwP/xV1J3o9KAiKSdq8a2UR5RCHYhnJseemweMUH2kNefpnA
+# h2Bn8H2opDztDJkj8OYRd/KQysE12NwaY3KOwAW8Rg8OdXv5fUZIsOWgprkCQM0V
+# oFHdXYExkJN3EzBbUCUw3yb4gAFPK56T+6cPpI8MJLJCQXHNMgti2QZhX9KkfRAf
+# fFYMFcpsbI+oziC5Brrk3361cJFHhgEJR0J42nqZTGSgUpDGHSZARGqNcAV5h+OQ
+# DLeF2p3URx/P6McUg1nJ2gMPYBsD+bwd9B0c/XIZ9Mt3ujlELPpkijjCdSZxhzu2
+# M3SZWJr57uY+FC+LspvIOH1Opofanh3JGDosNcAEu9yUMWKsEBMngD6VWQSQYZ6X
+# 9F80zCoeZwTq0i9AujnYzzx5W2fEgZejRu6K1GCASmztNlYJlACjqafWRofTqkJh
+# V/J2v97X3ruDvfpuOuQoUtVAwXrDsG2NOBuvVso5KdW54hBSsz/4+ORB4qLnq4/G
+# NtajUHorKRKHGOgFo8DKaXG+UNANwhGNxHbILSa59PxExMgCjBRP3828yGKsquSE
+# zzLNWnz5af9ZmeH4809fwIttI41JkuiY9X6hmMmLYv8OY34vvOK+zyxkS+9BULVA
+# P6gt+yaHaBlrln8Gi4/dBr2y6Srr/56g0DCCB3EwggVZoAMCAQICEzMAAAAVxedr
+# ngKbSZkAAAAAABUwDQYJKoZIhvcNAQELBQAwgYgxCzAJBgNVBAYTAlVTMRMwEQYD
+# VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24xMjAwBgNVBAMTKU1pY3Jvc29mdCBSb290IENlcnRp
+# ZmljYXRlIEF1dGhvcml0eSAyMDEwMB4XDTIxMDkzMDE4MjIyNVoXDTMwMDkzMDE4
+# MzIyNVowfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNV
+# BAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEmMCQG
+# A1UEAxMdTWljcm9zb2Z0IFRpbWUtU3RhbXAgUENBIDIwMTAwggIiMA0GCSqGSIb3
+# DQEBAQUAA4ICDwAwggIKAoICAQDk4aZM57RyIQt5osvXJHm9DtWC0/3unAcH0qls
+# TnXIyjVX9gF/bErg4r25PhdgM/9cT8dm95VTcVrifkpa/rg2Z4VGIwy1jRPPdzLA
+# EBjoYH1qUoNEt6aORmsHFPPFdvWGUNzBRMhxXFExN6AKOG6N7dcP2CZTfDlhAnrE
+# qv1yaa8dq6z2Nr41JmTamDu6GnszrYBbfowQHJ1S/rboYiXcag/PXfT+jlPP1uyF
+# Vk3v3byNpOORj7I5LFGc6XBpDco2LXCOMcg1KL3jtIckw+DJj361VI/c+gVVmG1o
+# O5pGve2krnopN6zL64NF50ZuyjLVwIYwXE8s4mKyzbnijYjklqwBSru+cakXW2dg
+# 3viSkR4dPf0gz3N9QZpGdc3EXzTdEonW/aUgfX782Z5F37ZyL9t9X4C626p+Nuw2
+# TPYrbqgSUei/BQOj0XOmTTd0lBw0gg/wEPK3Rxjtp+iZfD9M269ewvPV2HM9Q07B
+# MzlMjgK8QmguEOqEUUbi0b1qGFphAXPKZ6Je1yh2AuIzGHLXpyDwwvoSCtdjbwzJ
+# NmSLW6CmgyFdXzB0kZSU2LlQ+QuJYfM2BjUYhEfb3BvR/bLUHMVr9lxSUV0S2yW6
+# r1AFemzFER1y7435UsSFF5PAPBXbGjfHCBUYP3irRbb1Hode2o+eFnJpxq57t7c+
+# auIurQIDAQABo4IB3TCCAdkwEgYJKwYBBAGCNxUBBAUCAwEAATAjBgkrBgEEAYI3
+# FQIEFgQUKqdS/mTEmr6CkTxGNSnPEP8vBO4wHQYDVR0OBBYEFJ+nFV0AXmJdg/Tl
+# 0mWnG1M1GelyMFwGA1UdIARVMFMwUQYMKwYBBAGCN0yDfQEBMEEwPwYIKwYBBQUH
+# AgEWM2h0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2lvcHMvRG9jcy9SZXBvc2l0
+# b3J5Lmh0bTATBgNVHSUEDDAKBggrBgEFBQcDCDAZBgkrBgEEAYI3FAIEDB4KAFMA
+# dQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAW
+# gBTV9lbLj+iiXGJo0T2UkFvXzpoYxDBWBgNVHR8ETzBNMEugSaBHhkVodHRwOi8v
+# Y3JsLm1pY3Jvc29mdC5jb20vcGtpL2NybC9wcm9kdWN0cy9NaWNSb29DZXJBdXRf
+# MjAxMC0wNi0yMy5jcmwwWgYIKwYBBQUHAQEETjBMMEoGCCsGAQUFBzAChj5odHRw
+# Oi8vd3d3Lm1pY3Jvc29mdC5jb20vcGtpL2NlcnRzL01pY1Jvb0NlckF1dF8yMDEw
+# LTA2LTIzLmNydDANBgkqhkiG9w0BAQsFAAOCAgEAnVV9/Cqt4SwfZwExJFvhnnJL
+# /Klv6lwUtj5OR2R4sQaTlz0xM7U518JxNj/aZGx80HU5bbsPMeTCj/ts0aGUGCLu
+# 6WZnOlNN3Zi6th542DYunKmCVgADsAW+iehp4LoJ7nvfam++Kctu2D9IdQHZGN5t
+# ggz1bSNU5HhTdSRXud2f8449xvNo32X2pFaq95W2KFUn0CS9QKC/GbYSEhFdPSfg
+# QJY4rPf5KYnDvBewVIVCs/wMnosZiefwC2qBwoEZQhlSdYo2wh3DYXMuLGt7bj8s
+# CXgU6ZGyqVvfSaN0DLzskYDSPeZKPmY7T7uG+jIa2Zb0j/aRAfbOxnT99kxybxCr
+# dTDFNLB62FD+CljdQDzHVG2dY3RILLFORy3BFARxv2T5JL5zbcqOCb2zAVdJVGTZ
+# c9d/HltEAY5aGZFrDZ+kKNxnGSgkujhLmm77IVRrakURR6nxt67I6IleT53S0Ex2
+# tVdUCbFpAUR+fKFhbHP+CrvsQWY9af3LwUFJfn6Tvsv4O+S3Fb+0zj6lMVGEvL8C
+# wYKiexcdFYmNcP7ntdAoGokLjzbaukz5m/8K6TT4JDVnK+ANuOaMmdbhIurwJ0I9
+# JZTmdHRbatGePu1+oDEzfbzL6Xu/OHBE0ZDxyKs6ijoIYn/ZcGNTTY3ugm2lBRDB
+# cQZqELQdVTNYs6FwZvKhggNNMIICNQIBATCB+aGB0aSBzjCByzELMAkGA1UEBhMC
+# VVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNV
+# BAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjElMCMGA1UECxMcTWljcm9zb2Z0IEFt
+# ZXJpY2EgT3BlcmF0aW9uczEnMCUGA1UECxMeblNoaWVsZCBUU1MgRVNOOjM3MDMt
+# MDVFMC1EOTQ3MSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBTZXJ2aWNl
+# oiMKAQEwBwYFKw4DAhoDFQDRAMVJlA6bKq93Vnu3UkJgm5HlYaCBgzCBgKR+MHwx
+# CzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRt
+# b25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1p
+# Y3Jvc29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwMA0GCSqGSIb3DQEBCwUAAgUA66vU
+# vjAiGA8yMDI1MDQxNzE5Mjc1OFoYDzIwMjUwNDE4MTkyNzU4WjB0MDoGCisGAQQB
+# hFkKBAExLDAqMAoCBQDrq9S+AgEAMAcCAQACAjT+MAcCAQACAhqoMAoCBQDrrSY+
+# AgEAMDYGCisGAQQBhFkKBAIxKDAmMAwGCisGAQQBhFkKAwKgCjAIAgEAAgMHoSCh
+# CjAIAgEAAgMBhqAwDQYJKoZIhvcNAQELBQADggEBAFJ5PtNDa4aB1G6rj4bSpX2i
+# IjyArwHqYz+Smk9kYsm4RUpwGh2vIQNef8NNAJRkJzLazrCDWybLfHbZcGuF5AXh
+# lpLXlUZou58MwnsLR9UNgnJyvZy+gjQXqWiMdBVOlYfaS42HMg0EBfmhfX0e59qp
+# NImgXcHxnIyoXj0CqAOqnw13cadbVrdP6NiUjXNvrIUjDclm/QvlZpGVanzLWuRU
+# /kunB5mqiXbkEGxAZYEZtNtxuQq/5NkjP0/TxCUnF697U7RIG8Gv4vv+2GRitY40
+# cZuvHowr1yjB/WFF9XDhj0kclFUZRzSs8RF6lZOojC4h3jADiKhtVy3bcHql8fUx
+# ggQNMIIECQIBATCBkzB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3Rv
+# bjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0
+# aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMAITMwAA
+# AgpHshTZ7rKzDwABAAACCjANBglghkgBZQMEAgEFAKCCAUowGgYJKoZIhvcNAQkD
+# MQ0GCyqGSIb3DQEJEAEEMC8GCSqGSIb3DQEJBDEiBCCB3WYqVdze7H/mWbln9i1H
+# 0GqZNcciy43vfZDk59yMUTCB+gYLKoZIhvcNAQkQAi8xgeowgecwgeQwgb0EIE2a
+# y/y0epK/X3Z03KTcloqE8u9IXRtdO7Mex0hw9+SaMIGYMIGApH4wfDELMAkGA1UE
+# BhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAc
+# BgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEmMCQGA1UEAxMdTWljcm9zb2Z0
+# IFRpbWUtU3RhbXAgUENBIDIwMTACEzMAAAIKR7IU2e6ysw8AAQAAAgowIgQgDRaK
+# 3Ohk+Zwm39fM3jBl2Cf6gN1erFkhdc9QLdvsApgwDQYJKoZIhvcNAQELBQAEggIA
+# sF075JXErcQmg7Ldt5Gb7188WD+ERMEb8R07+O0u8oouKFcXNKQvF/PIFY8F1wpa
+# ODOzpdKRQS3ANKigl8cvQemfDFoMfR+A3oTTbriUT46btJ2ksVIw4isGOEO62jn8
+# 4wtwwchGgxePK3wBtYPBHLpxwoS6h7Ha++fN9WM8MGrOOVPTQ4kdUoiYg68uPgLn
+# O4B+ynDvB1SIVTW/2TDpb4tIWEEpEyu8IHjuar/j9W3Nv2CX6u7tyjF3gtOo4Ojd
+# T8z/HIEKqD+MwSO3N2Oua78qlccSLGrl2KEJhhTIWIWynG5Jc/7XOwF8FCbVITMz
+# onaPxXKyR3ruep7DymS6UPwlH4kHQEg8YhHwkeAhy3UWIzujf0Gozih/wmRlU1ro
+# QJVnw4bUvXurwAI4jX2FlOEsAwbqdtUq9ZtXZSVcD13uJxgwBLzo7B6I3HiV11m1
+# akhAGy4G1H4C9rwmreYVI9LmR1D5EYxDv7PVFLdAufRVJxKVfvSNr9pn1i3dif79
+# 0QHhTHCuYBKtAPIuZ1MrlA3xyy0duj9PmV1HKJmq/Kk8/2reRKkXvwM7eKhThSNx
+# fNfGpK1PeB8i0ivqrliwfy64Tf7ck37RiScQ18Mob4V9p2j/kNXR3GRlP+zRoaeh
+# FfoVQvYku81WeGmvF8PLiw0NrahuibVHQNiTrbxfQn0=
+# SIG # End signature block

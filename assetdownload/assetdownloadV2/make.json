@@ -1,0 +1,16 @@
+{
+    "common": [
+        {
+            "module": "../../CommonNew/LifecycleServices",
+            "type": "ps"
+        },
+        {
+            "module": "../../CommonNew/VSSDK",
+            "type": "ps"
+        },
+        {
+            "module": "../../CommonNew/Icon32",
+            "type": "png"
+        }
+    ]
+}

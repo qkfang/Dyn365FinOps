@@ -1,0 +1,421 @@
+########################################
+# Private functions.
+########################################
+function ConvertFrom-LongFormPath {
+    [CmdletBinding()]
+    param([string]$Path)
+
+    if ($Path) {
+        if ($Path.StartsWith('\\?\UNC')) {
+            # E.g. \\?\UNC\server\share -> \\server\share
+            return $Path.Substring(1, '\?\UNC'.Length)
+        } elseif ($Path.StartsWith('\\?\')) {
+            # E.g. \\?\C:\directory -> C:\directory
+            return $Path.Substring('\\?\'.Length)
+        }
+    }
+
+    return $Path
+}
+function ConvertTo-LongFormPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path)
+
+    [string]$longFormPath = Get-FullNormalizedPath -Path $Path
+    if ($longFormPath -and !$longFormPath.StartsWith('\\?')) {
+        if ($longFormPath.StartsWith('\\')) {
+            # E.g. \\server\share -> \\?\UNC\server\share
+            return "\\?\UNC$($longFormPath.Substring(1))"
+        } else {
+            # E.g. C:\directory -> \\?\C:\directory
+            return "\\?\$longFormPath"
+        }
+    }
+
+    return $longFormPath
+}
+
+# TODO: ADD A SWITCH TO EXCLUDE FILES, A SWITCH TO EXCLUDE DIRECTORIES, AND A SWITCH NOT TO FOLLOW REPARSE POINTS.
+function Get-DirectoryChildItem {
+    [CmdletBinding()]
+    param(
+        [string]$Path,
+        [ValidateNotNullOrEmpty()]
+        [Parameter()]
+        [string]$Filter = "*",
+        [switch]$Force,
+        [VstsTaskSdk.FS.FindFlags]$Flags = [VstsTaskSdk.FS.FindFlags]::LargeFetch,
+        [VstsTaskSdk.FS.FindInfoLevel]$InfoLevel = [VstsTaskSdk.FS.FindInfoLevel]::Basic,
+        [switch]$Recurse)
+
+    $stackOfDirectoryQueues = New-Object System.Collections.Stack
+    while ($true) {
+        $directoryQueue = New-Object System.Collections.Queue
+        $fileQueue = New-Object System.Collections.Queue
+        $findData = New-Object VstsTaskSdk.FS.FindData
+        $longFormPath = (ConvertTo-LongFormPath $Path)
+        $handle = $null
+        try {
+            $handle = [VstsTaskSdk.FS.NativeMethods]::FindFirstFileEx(
+                [System.IO.Path]::Combine($longFormPath, $Filter),
+                $InfoLevel,
+                $findData,
+                [VstsTaskSdk.FS.FindSearchOps]::NameMatch,
+                [System.IntPtr]::Zero,
+                $Flags)
+            if (!$handle.IsInvalid) {
+                while ($true) {
+                    if ($findData.fileName -notin '.', '..') {
+                        $attributes = [VstsTaskSdk.FS.Attributes]$findData.fileAttributes
+                        # If the item is hidden, check if $Force is specified.
+                        if ($Force -or !$attributes.HasFlag([VstsTaskSdk.FS.Attributes]::Hidden)) {
+                            # Create the item.
+                            $item = New-Object -TypeName psobject -Property @{
+                                'Attributes' = $attributes
+                                'FullName' = (ConvertFrom-LongFormPath -Path ([System.IO.Path]::Combine($Path, $findData.fileName)))
+                                'Name' = $findData.fileName
+                            }
+                            # Output directories immediately.
+                            if ($item.Attributes.HasFlag([VstsTaskSdk.FS.Attributes]::Directory)) {
+                                $item
+                                # Append to the directory queue if recursive and default filter.
+                                if ($Recurse -and $Filter -eq '*') {
+                                    $directoryQueue.Enqueue($item)
+                                }
+                            } else {
+                                # Hold the files until all directories have been output.
+                                $fileQueue.Enqueue($item)
+                            }
+                        }
+                    }
+
+                    if (!([VstsTaskSdk.FS.NativeMethods]::FindNextFile($handle, $findData))) { break }
+
+                    if ($handle.IsInvalid) {
+                        throw (New-Object -TypeName System.ComponentModel.Win32Exception -ArgumentList @(
+                            [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                            Get-LocString -Key PSLIB_EnumeratingSubdirectoriesFailedForPath0 -ArgumentList $Path
+                        ))
+                    }
+                }
+            }
+        } finally {
+            if ($handle -ne $null) { $handle.Dispose() }
+        }
+
+        # If recursive and non-default filter, queue child directories.
+        if ($Recurse -and $Filter -ne '*') {
+            $findData = New-Object VstsTaskSdk.FS.FindData
+            $handle = $null
+            try {
+                $handle = [VstsTaskSdk.FS.NativeMethods]::FindFirstFileEx(
+                    [System.IO.Path]::Combine($longFormPath, '*'),
+                    [VstsTaskSdk.FS.FindInfoLevel]::Basic,
+                    $findData,
+                    [VstsTaskSdk.FS.FindSearchOps]::NameMatch,
+                    [System.IntPtr]::Zero,
+                    $Flags)
+                if (!$handle.IsInvalid) {
+                    while ($true) {
+                        if ($findData.fileName -notin '.', '..') {
+                            $attributes = [VstsTaskSdk.FS.Attributes]$findData.fileAttributes
+                            # If the item is hidden, check if $Force is specified.
+                            if ($Force -or !$attributes.HasFlag([VstsTaskSdk.FS.Attributes]::Hidden)) {
+                                # Collect directories only.
+                                if ($attributes.HasFlag([VstsTaskSdk.FS.Attributes]::Directory)) {
+                                    # Create the item.
+                                    $item = New-Object -TypeName psobject -Property @{
+                                        'Attributes' = $attributes
+                                        'FullName' = (ConvertFrom-LongFormPath -Path ([System.IO.Path]::Combine($Path, $findData.fileName)))
+                                        'Name' = $findData.fileName
+                                    }
+                                    $directoryQueue.Enqueue($item)
+                                }
+                            }
+                        }
+
+                        if (!([VstsTaskSdk.FS.NativeMethods]::FindNextFile($handle, $findData))) { break }
+
+                        if ($handle.IsInvalid) {
+                            throw (New-Object -TypeName System.ComponentModel.Win32Exception -ArgumentList @(
+                                [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                                Get-LocString -Key PSLIB_EnumeratingSubdirectoriesFailedForPath0 -ArgumentList $Path
+                            ))
+                        }
+                    }
+                }
+            } finally {
+                if ($handle -ne $null) { $handle.Dispose() }
+            }
+        }
+
+        # Output the files.
+        $fileQueue
+
+        # Push the directory queue onto the stack if any directories were found.
+        if ($directoryQueue.Count) { $stackOfDirectoryQueues.Push($directoryQueue) }
+
+        # Break out of the loop if no more directory queues to process.
+        if (!$stackOfDirectoryQueues.Count) { break }
+
+        # Get the next path.
+        $directoryQueue = $stackOfDirectoryQueues.Peek()
+        $Path = $directoryQueue.Dequeue().FullName
+
+        # Pop the directory queue if it's empty.
+        if (!$directoryQueue.Count) { $null = $stackOfDirectoryQueues.Pop() }
+    }
+}
+
+function Get-FullNormalizedPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path)
+
+    [string]$outPath = $Path
+    [uint32]$bufferSize = [VstsTaskSdk.FS.NativeMethods]::GetFullPathName($Path, 0, $null, $null)
+    [int]$lastWin32Error = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($bufferSize -gt 0) {
+        $absolutePath = New-Object System.Text.StringBuilder([int]$bufferSize)
+        [uint32]$length = [VstsTaskSdk.FS.NativeMethods]::GetFullPathName($Path, $bufferSize, $absolutePath, $null)
+        $lastWin32Error = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($length -gt 0) {
+            $outPath = $absolutePath.ToString()
+        } else  {
+            throw (New-Object -TypeName System.ComponentModel.Win32Exception -ArgumentList @(
+                $lastWin32Error
+                Get-LocString -Key PSLIB_PathLengthNotReturnedFor0 -ArgumentList $Path
+            ))
+        }
+    } else {
+        throw (New-Object -TypeName System.ComponentModel.Win32Exception -ArgumentList @(
+            $lastWin32Error
+            Get-LocString -Key PSLIB_PathLengthNotReturnedFor0 -ArgumentList $Path
+        ))
+    }
+
+    if ($outPath.EndsWith('\') -and !$outPath.EndsWith(':\')) {
+        $outPath = $outPath.TrimEnd('\')
+    }
+
+    $outPath
+}
+# SIG # Begin signature block
+# MIIoDwYJKoZIhvcNAQcCoIIoADCCJ/wCAQExDzANBglghkgBZQMEAgEFADB5Bgor
+# BgEEAYI3AgEEoGswaTA0BgorBgEEAYI3AgEeMCYCAwEAAAQQH8w7YFlLCE63JNLG
+# KX7zUQIBAAIBAAIBAAIBAAIBADAxMA0GCWCGSAFlAwQCAQUABCAWnfW6aYPzVGKG
+# Jkh+dGciI5wIqiVWZNvlLfO9Sy0gU6CCDXYwggX0MIID3KADAgECAhMzAAAEBGx0
+# Bv9XKydyAAAAAAQEMA0GCSqGSIb3DQEBCwUAMH4xCzAJBgNVBAYTAlVTMRMwEQYD
+# VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNpZ25p
+# bmcgUENBIDIwMTEwHhcNMjQwOTEyMjAxMTE0WhcNMjUwOTExMjAxMTE0WjB0MQsw
+# CQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9u
+# ZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMR4wHAYDVQQDExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIB
+# AQC0KDfaY50MDqsEGdlIzDHBd6CqIMRQWW9Af1LHDDTuFjfDsvna0nEuDSYJmNyz
+# NB10jpbg0lhvkT1AzfX2TLITSXwS8D+mBzGCWMM/wTpciWBV/pbjSazbzoKvRrNo
+# DV/u9omOM2Eawyo5JJJdNkM2d8qzkQ0bRuRd4HarmGunSouyb9NY7egWN5E5lUc3
+# a2AROzAdHdYpObpCOdeAY2P5XqtJkk79aROpzw16wCjdSn8qMzCBzR7rvH2WVkvF
+# HLIxZQET1yhPb6lRmpgBQNnzidHV2Ocxjc8wNiIDzgbDkmlx54QPfw7RwQi8p1fy
+# 4byhBrTjv568x8NGv3gwb0RbAgMBAAGjggFzMIIBbzAfBgNVHSUEGDAWBgorBgEE
+# AYI3TAgBBggrBgEFBQcDAzAdBgNVHQ4EFgQU8huhNbETDU+ZWllL4DNMPCijEU4w
+# RQYDVR0RBD4wPKQ6MDgxHjAcBgNVBAsTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEW
+# MBQGA1UEBRMNMjMwMDEyKzUwMjkyMzAfBgNVHSMEGDAWgBRIbmTlUAXTgqoXNzci
+# tW2oynUClTBUBgNVHR8ETTBLMEmgR6BFhkNodHRwOi8vd3d3Lm1pY3Jvc29mdC5j
+# b20vcGtpb3BzL2NybC9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3JsMGEG
+# CCsGAQUFBwEBBFUwUzBRBggrBgEFBQcwAoZFaHR0cDovL3d3dy5taWNyb3NvZnQu
+# Y29tL3BraW9wcy9jZXJ0cy9NaWNDb2RTaWdQQ0EyMDExXzIwMTEtMDctMDguY3J0
+# MAwGA1UdEwEB/wQCMAAwDQYJKoZIhvcNAQELBQADggIBAIjmD9IpQVvfB1QehvpC
+# Ge7QeTQkKQ7j3bmDMjwSqFL4ri6ae9IFTdpywn5smmtSIyKYDn3/nHtaEn0X1NBj
+# L5oP0BjAy1sqxD+uy35B+V8wv5GrxhMDJP8l2QjLtH/UglSTIhLqyt8bUAqVfyfp
+# h4COMRvwwjTvChtCnUXXACuCXYHWalOoc0OU2oGN+mPJIJJxaNQc1sjBsMbGIWv3
+# cmgSHkCEmrMv7yaidpePt6V+yPMik+eXw3IfZ5eNOiNgL1rZzgSJfTnvUqiaEQ0X
+# dG1HbkDv9fv6CTq6m4Ty3IzLiwGSXYxRIXTxT4TYs5VxHy2uFjFXWVSL0J2ARTYL
+# E4Oyl1wXDF1PX4bxg1yDMfKPHcE1Ijic5lx1KdK1SkaEJdto4hd++05J9Bf9TAmi
+# u6EK6C9Oe5vRadroJCK26uCUI4zIjL/qG7mswW+qT0CW0gnR9JHkXCWNbo8ccMk1
+# sJatmRoSAifbgzaYbUz8+lv+IXy5GFuAmLnNbGjacB3IMGpa+lbFgih57/fIhamq
+# 5VhxgaEmn/UjWyr+cPiAFWuTVIpfsOjbEAww75wURNM1Imp9NJKye1O24EspEHmb
+# DmqCUcq7NqkOKIG4PVm3hDDED/WQpzJDkvu4FrIbvyTGVU01vKsg4UfcdiZ0fQ+/
+# V0hf8yrtq9CkB8iIuk5bBxuPMIIHejCCBWKgAwIBAgIKYQ6Q0gAAAAAAAzANBgkq
+# hkiG9w0BAQsFADCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24x
+# EDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlv
+# bjEyMDAGA1UEAxMpTWljcm9zb2Z0IFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
+# IDIwMTEwHhcNMTEwNzA4MjA1OTA5WhcNMjYwNzA4MjEwOTA5WjB+MQswCQYDVQQG
+# EwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwG
+# A1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSgwJgYDVQQDEx9NaWNyb3NvZnQg
+# Q29kZSBTaWduaW5nIFBDQSAyMDExMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIIC
+# CgKCAgEAq/D6chAcLq3YbqqCEE00uvK2WCGfQhsqa+laUKq4BjgaBEm6f8MMHt03
+# a8YS2AvwOMKZBrDIOdUBFDFC04kNeWSHfpRgJGyvnkmc6Whe0t+bU7IKLMOv2akr
+# rnoJr9eWWcpgGgXpZnboMlImEi/nqwhQz7NEt13YxC4Ddato88tt8zpcoRb0Rrrg
+# OGSsbmQ1eKagYw8t00CT+OPeBw3VXHmlSSnnDb6gE3e+lD3v++MrWhAfTVYoonpy
+# 4BI6t0le2O3tQ5GD2Xuye4Yb2T6xjF3oiU+EGvKhL1nkkDstrjNYxbc+/jLTswM9
+# sbKvkjh+0p2ALPVOVpEhNSXDOW5kf1O6nA+tGSOEy/S6A4aN91/w0FK/jJSHvMAh
+# dCVfGCi2zCcoOCWYOUo2z3yxkq4cI6epZuxhH2rhKEmdX4jiJV3TIUs+UsS1Vz8k
+# A/DRelsv1SPjcF0PUUZ3s/gA4bysAoJf28AVs70b1FVL5zmhD+kjSbwYuER8ReTB
+# w3J64HLnJN+/RpnF78IcV9uDjexNSTCnq47f7Fufr/zdsGbiwZeBe+3W7UvnSSmn
+# Eyimp31ngOaKYnhfsi+E11ecXL93KCjx7W3DKI8sj0A3T8HhhUSJxAlMxdSlQy90
+# lfdu+HggWCwTXWCVmj5PM4TasIgX3p5O9JawvEagbJjS4NaIjAsCAwEAAaOCAe0w
+# ggHpMBAGCSsGAQQBgjcVAQQDAgEAMB0GA1UdDgQWBBRIbmTlUAXTgqoXNzcitW2o
+# ynUClTAZBgkrBgEEAYI3FAIEDB4KAFMAdQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYD
+# VR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAWgBRyLToCMZBDuRQFTuHqp8cx0SOJNDBa
+# BgNVHR8EUzBRME+gTaBLhklodHRwOi8vY3JsLm1pY3Jvc29mdC5jb20vcGtpL2Ny
+# bC9wcm9kdWN0cy9NaWNSb29DZXJBdXQyMDExXzIwMTFfMDNfMjIuY3JsMF4GCCsG
+# AQUFBwEBBFIwUDBOBggrBgEFBQcwAoZCaHR0cDovL3d3dy5taWNyb3NvZnQuY29t
+# L3BraS9jZXJ0cy9NaWNSb29DZXJBdXQyMDExXzIwMTFfMDNfMjIuY3J0MIGfBgNV
+# HSAEgZcwgZQwgZEGCSsGAQQBgjcuAzCBgzA/BggrBgEFBQcCARYzaHR0cDovL3d3
+# dy5taWNyb3NvZnQuY29tL3BraW9wcy9kb2NzL3ByaW1hcnljcHMuaHRtMEAGCCsG
+# AQUFBwICMDQeMiAdAEwAZQBnAGEAbABfAHAAbwBsAGkAYwB5AF8AcwB0AGEAdABl
+# AG0AZQBuAHQALiAdMA0GCSqGSIb3DQEBCwUAA4ICAQBn8oalmOBUeRou09h0ZyKb
+# C5YR4WOSmUKWfdJ5DJDBZV8uLD74w3LRbYP+vj/oCso7v0epo/Np22O/IjWll11l
+# hJB9i0ZQVdgMknzSGksc8zxCi1LQsP1r4z4HLimb5j0bpdS1HXeUOeLpZMlEPXh6
+# I/MTfaaQdION9MsmAkYqwooQu6SpBQyb7Wj6aC6VoCo/KmtYSWMfCWluWpiW5IP0
+# wI/zRive/DvQvTXvbiWu5a8n7dDd8w6vmSiXmE0OPQvyCInWH8MyGOLwxS3OW560
+# STkKxgrCxq2u5bLZ2xWIUUVYODJxJxp/sfQn+N4sOiBpmLJZiWhub6e3dMNABQam
+# ASooPoI/E01mC8CzTfXhj38cbxV9Rad25UAqZaPDXVJihsMdYzaXht/a8/jyFqGa
+# J+HNpZfQ7l1jQeNbB5yHPgZ3BtEGsXUfFL5hYbXw3MYbBL7fQccOKO7eZS/sl/ah
+# XJbYANahRr1Z85elCUtIEJmAH9AAKcWxm6U/RXceNcbSoqKfenoi+kiVH6v7RyOA
+# 9Z74v2u3S5fi63V4GuzqN5l5GEv/1rMjaHXmr/r8i+sLgOppO6/8MO0ETI7f33Vt
+# Y5E90Z1WTk+/gFcioXgRMiF670EKsT/7qMykXcGhiJtXcVZOSEXAQsmbdlsKgEhr
+# /Xmfwb1tbWrJUnMTDXpQzTGCGe8wghnrAgEBMIGVMH4xCzAJBgNVBAYTAlVTMRMw
+# EQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVN
+# aWNyb3NvZnQgQ29ycG9yYXRpb24xKDAmBgNVBAMTH01pY3Jvc29mdCBDb2RlIFNp
+# Z25pbmcgUENBIDIwMTECEzMAAAQEbHQG/1crJ3IAAAAABAQwDQYJYIZIAWUDBAIB
+# BQCggZAwGQYJKoZIhvcNAQkDMQwGCisGAQQBgjcCAQQwLwYJKoZIhvcNAQkEMSIE
+# IDJXrRRZn5CXOUw7SzxlIXo79kzk45bN9epjzUPSgH94MEIGCisGAQQBgjcCAQwx
+# NDAyoBSAEgBNAGkAYwByAG8AcwBvAGYAdKEagBhodHRwOi8vd3d3Lm1pY3Jvc29m
+# dC5jb20wDQYJKoZIhvcNAQEBBQAEggEAnOTQwAOvypYMrqJemmKZfBkQIMBAkUGR
+# BmzTJLfmesZiw4M588kQN11REn5r1liiCGKBHLYmGYnOMTWveH+iEypHIPJmNdds
+# g2p3FXOP7QSS0Xs6daGUX8Nut4V+BgV4pl94Jlo+LdhnjZb89MvoVBJm5y/MJt3i
+# cSWD1Gzv+LP5sLTOn1iFxBSBYxvGRm6DxEvv5aVcfZ27ttlhI9485lloAKE5DNCu
+# t6XrnaGOA5GxRz5ESAA1HP8Hu83041nYFp2J2Dg6oXdLgDMEBGX8Aaz2yxfQMuc2
+# 6IXZuu7I5/RA2Kl6MINi4O5DgVL1Dd2JuhsvtKgLpVn6OZrnHNw0kqGCF5cwgheT
+# BgorBgEEAYI3AwMBMYIXgzCCF38GCSqGSIb3DQEHAqCCF3AwghdsAgEDMQ8wDQYJ
+# YIZIAWUDBAIBBQAwggFSBgsqhkiG9w0BCRABBKCCAUEEggE9MIIBOQIBAQYKKwYB
+# BAGEWQoDATAxMA0GCWCGSAFlAwQCAQUABCDbtrejBvTMEjY44X4y4Ks0xZuJxCIT
+# IFj9lIOOA2FjcQIGZ/f5EkqqGBMyMDI1MDQxODAwMTkxMS41NzRaMASAAgH0oIHR
+# pIHOMIHLMQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UE
+# BxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSUwIwYD
+# VQQLExxNaWNyb3NvZnQgQW1lcmljYSBPcGVyYXRpb25zMScwJQYDVQQLEx5uU2hp
+# ZWxkIFRTUyBFU046REMwMC0wNUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBU
+# aW1lLVN0YW1wIFNlcnZpY2WgghHtMIIHIDCCBQigAwIBAgITMwAAAgO7HlwAOGx0
+# ygABAAACAzANBgkqhkiG9w0BAQsFADB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMK
+# V2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0
+# IENvcnBvcmF0aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0Eg
+# MjAxMDAeFw0yNTAxMzAxOTQyNDZaFw0yNjA0MjIxOTQyNDZaMIHLMQswCQYDVQQG
+# EwJVUzETMBEGA1UECBMKV2FzaGluZ3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwG
+# A1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMSUwIwYDVQQLExxNaWNyb3NvZnQg
+# QW1lcmljYSBPcGVyYXRpb25zMScwJQYDVQQLEx5uU2hpZWxkIFRTUyBFU046REMw
+# MC0wNUUwLUQ5NDcxJTAjBgNVBAMTHE1pY3Jvc29mdCBUaW1lLVN0YW1wIFNlcnZp
+# Y2UwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQChl0MH5wAnOx8Uh8Rt
+# idF0J0yaFDHJYHTpPvRR16X1KxGDYfT8PrcGjCLCiaOu3K1DmUIU4Rc5olndjapp
+# NuOgzwUoj43VbbJx5PFTY/a1Z80tpqVP0OoKJlUkfDPSBLFgXWj6VgayRCINtLsU
+# asy0w5gysD7ILPZuiQjace5KxASjKf2MVX1qfEzYBbTGNEijSQCKwwyc0eavr4Fo
+# 3X/+sCuuAtkTWissU64k8rK60jsGRApiESdfuHr0yWAmc7jTOPNeGAx6KCL2ktpn
+# GegLDd1IlE6Bu6BSwAIFHr7zOwIlFqyQuCe0SQALCbJhsT9y9iy61RJAXsU0u0TC
+# 5YYmTSbEI7g10dYx8Uj+vh9InLoKYC5DpKb311bYVd0bytbzlfTRslRTJgotnfCA
+# IGMLqEqk9/2VRGu9klJi1j9nVfqyYHYrMPOBXcrQYW0jmKNjOL47CaEArNzhDBia
+# 1wXdJANKqMvJ8pQe2m8/cibyDM+1BVZquNAov9N4tJF4ACtjX0jjXNDUMtSZoVFQ
+# H+FkWdfPWx1uBIkc97R+xRLuPjUypHZ5A3AALSke4TaRBvbvTBYyW2HenOT7nYLK
+# TO4jw5Qq6cw3Z9zTKSPQ6D5lyiYpes5RR2MdMvJS4fCcPJFeaVOvuWFSQ/EGtVBS
+# hhmLB+5ewzFzdpf1UuJmuOQTTwIDAQABo4IBSTCCAUUwHQYDVR0OBBYEFLIpWUB+
+# EeeQ29sWe0VdzxWQGJJ9MB8GA1UdIwQYMBaAFJ+nFV0AXmJdg/Tl0mWnG1M1Gely
+# MF8GA1UdHwRYMFYwVKBSoFCGTmh0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2lv
+# cHMvY3JsL01pY3Jvc29mdCUyMFRpbWUtU3RhbXAlMjBQQ0ElMjAyMDEwKDEpLmNy
+# bDBsBggrBgEFBQcBAQRgMF4wXAYIKwYBBQUHMAKGUGh0dHA6Ly93d3cubWljcm9z
+# b2Z0LmNvbS9wa2lvcHMvY2VydHMvTWljcm9zb2Z0JTIwVGltZS1TdGFtcCUyMFBD
+# QSUyMDIwMTAoMSkuY3J0MAwGA1UdEwEB/wQCMAAwFgYDVR0lAQH/BAwwCgYIKwYB
+# BQUHAwgwDgYDVR0PAQH/BAQDAgeAMA0GCSqGSIb3DQEBCwUAA4ICAQCQEMbesD6T
+# C08R0oYCdSC452AQrGf/O89GQ54CtgEsbxzwGDVUcmjXFcnaJSTNedBKVXkBgawR
+# onP1LgxH4bzzVj2eWNmzGIwO1FlhldAPOHAzLBEHRoSZ4pddFtaQxoabU/N1vWyI
+# CiN60It85gnF5JD4MMXyd6pS8eADIi6TtjfgKPoumWa0BFQ/aEzjUrfPN1r7crK+
+# qkmLztw/ENS7zemfyx4kGRgwY1WBfFqm/nFlJDPQBicqeU3dOp9hj7WqD0Rc+/4V
+# Z6wQjesIyCkv5uhUNy2LhNDi2leYtAiIFpmjfNk4GngLvC2Tj9IrOMv20Srym5J/
+# Fh7yWAiPeGs3yA3QapjZTtfr7NfzpBIJQ4xT/ic4WGWqhGlRlVBI5u6Ojw3ZxSZC
+# Lg3vRC4KYypkh8FdIWoKirjidEGlXsNOo+UP/YG5KhebiudTBxGecfJCuuUspIdR
+# hStHAQsjv/dAqWBLlhorq2OCaP+wFhE3WPgnnx5pflvlujocPgsN24++ddHrl3O1
+# FFabW8m0UkDHSKCh8QTwTkYOwu99iExBVWlbYZRz2qOIBjL/ozEhtCB0auKhfTLL
+# euNGBUaBz+oZZ+X9UAECoMhkETjb6YfNaI1T7vVAaiuhBoV/JCOQT+RYZrgykyPp
+# zpmwMNFBD1vdW/29q9nkTWoEhcEOO0L9NzCCB3EwggVZoAMCAQICEzMAAAAVxedr
+# ngKbSZkAAAAAABUwDQYJKoZIhvcNAQELBQAwgYgxCzAJBgNVBAYTAlVTMRMwEQYD
+# VQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRtb25kMR4wHAYDVQQKExVNaWNy
+# b3NvZnQgQ29ycG9yYXRpb24xMjAwBgNVBAMTKU1pY3Jvc29mdCBSb290IENlcnRp
+# ZmljYXRlIEF1dGhvcml0eSAyMDEwMB4XDTIxMDkzMDE4MjIyNVoXDTMwMDkzMDE4
+# MzIyNVowfDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNV
+# BAcTB1JlZG1vbmQxHjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEmMCQG
+# A1UEAxMdTWljcm9zb2Z0IFRpbWUtU3RhbXAgUENBIDIwMTAwggIiMA0GCSqGSIb3
+# DQEBAQUAA4ICDwAwggIKAoICAQDk4aZM57RyIQt5osvXJHm9DtWC0/3unAcH0qls
+# TnXIyjVX9gF/bErg4r25PhdgM/9cT8dm95VTcVrifkpa/rg2Z4VGIwy1jRPPdzLA
+# EBjoYH1qUoNEt6aORmsHFPPFdvWGUNzBRMhxXFExN6AKOG6N7dcP2CZTfDlhAnrE
+# qv1yaa8dq6z2Nr41JmTamDu6GnszrYBbfowQHJ1S/rboYiXcag/PXfT+jlPP1uyF
+# Vk3v3byNpOORj7I5LFGc6XBpDco2LXCOMcg1KL3jtIckw+DJj361VI/c+gVVmG1o
+# O5pGve2krnopN6zL64NF50ZuyjLVwIYwXE8s4mKyzbnijYjklqwBSru+cakXW2dg
+# 3viSkR4dPf0gz3N9QZpGdc3EXzTdEonW/aUgfX782Z5F37ZyL9t9X4C626p+Nuw2
+# TPYrbqgSUei/BQOj0XOmTTd0lBw0gg/wEPK3Rxjtp+iZfD9M269ewvPV2HM9Q07B
+# MzlMjgK8QmguEOqEUUbi0b1qGFphAXPKZ6Je1yh2AuIzGHLXpyDwwvoSCtdjbwzJ
+# NmSLW6CmgyFdXzB0kZSU2LlQ+QuJYfM2BjUYhEfb3BvR/bLUHMVr9lxSUV0S2yW6
+# r1AFemzFER1y7435UsSFF5PAPBXbGjfHCBUYP3irRbb1Hode2o+eFnJpxq57t7c+
+# auIurQIDAQABo4IB3TCCAdkwEgYJKwYBBAGCNxUBBAUCAwEAATAjBgkrBgEEAYI3
+# FQIEFgQUKqdS/mTEmr6CkTxGNSnPEP8vBO4wHQYDVR0OBBYEFJ+nFV0AXmJdg/Tl
+# 0mWnG1M1GelyMFwGA1UdIARVMFMwUQYMKwYBBAGCN0yDfQEBMEEwPwYIKwYBBQUH
+# AgEWM2h0dHA6Ly93d3cubWljcm9zb2Z0LmNvbS9wa2lvcHMvRG9jcy9SZXBvc2l0
+# b3J5Lmh0bTATBgNVHSUEDDAKBggrBgEFBQcDCDAZBgkrBgEEAYI3FAIEDB4KAFMA
+# dQBiAEMAQTALBgNVHQ8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAfBgNVHSMEGDAW
+# gBTV9lbLj+iiXGJo0T2UkFvXzpoYxDBWBgNVHR8ETzBNMEugSaBHhkVodHRwOi8v
+# Y3JsLm1pY3Jvc29mdC5jb20vcGtpL2NybC9wcm9kdWN0cy9NaWNSb29DZXJBdXRf
+# MjAxMC0wNi0yMy5jcmwwWgYIKwYBBQUHAQEETjBMMEoGCCsGAQUFBzAChj5odHRw
+# Oi8vd3d3Lm1pY3Jvc29mdC5jb20vcGtpL2NlcnRzL01pY1Jvb0NlckF1dF8yMDEw
+# LTA2LTIzLmNydDANBgkqhkiG9w0BAQsFAAOCAgEAnVV9/Cqt4SwfZwExJFvhnnJL
+# /Klv6lwUtj5OR2R4sQaTlz0xM7U518JxNj/aZGx80HU5bbsPMeTCj/ts0aGUGCLu
+# 6WZnOlNN3Zi6th542DYunKmCVgADsAW+iehp4LoJ7nvfam++Kctu2D9IdQHZGN5t
+# ggz1bSNU5HhTdSRXud2f8449xvNo32X2pFaq95W2KFUn0CS9QKC/GbYSEhFdPSfg
+# QJY4rPf5KYnDvBewVIVCs/wMnosZiefwC2qBwoEZQhlSdYo2wh3DYXMuLGt7bj8s
+# CXgU6ZGyqVvfSaN0DLzskYDSPeZKPmY7T7uG+jIa2Zb0j/aRAfbOxnT99kxybxCr
+# dTDFNLB62FD+CljdQDzHVG2dY3RILLFORy3BFARxv2T5JL5zbcqOCb2zAVdJVGTZ
+# c9d/HltEAY5aGZFrDZ+kKNxnGSgkujhLmm77IVRrakURR6nxt67I6IleT53S0Ex2
+# tVdUCbFpAUR+fKFhbHP+CrvsQWY9af3LwUFJfn6Tvsv4O+S3Fb+0zj6lMVGEvL8C
+# wYKiexcdFYmNcP7ntdAoGokLjzbaukz5m/8K6TT4JDVnK+ANuOaMmdbhIurwJ0I9
+# JZTmdHRbatGePu1+oDEzfbzL6Xu/OHBE0ZDxyKs6ijoIYn/ZcGNTTY3ugm2lBRDB
+# cQZqELQdVTNYs6FwZvKhggNQMIICOAIBATCB+aGB0aSBzjCByzELMAkGA1UEBhMC
+# VVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcTB1JlZG1vbmQxHjAcBgNV
+# BAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjElMCMGA1UECxMcTWljcm9zb2Z0IEFt
+# ZXJpY2EgT3BlcmF0aW9uczEnMCUGA1UECxMeblNoaWVsZCBUU1MgRVNOOkRDMDAt
+# MDVFMC1EOTQ3MSUwIwYDVQQDExxNaWNyb3NvZnQgVGltZS1TdGFtcCBTZXJ2aWNl
+# oiMKAQEwBwYFKw4DAhoDFQDNrxRX/iz6ss1lBCXG8P1LFxD0e6CBgzCBgKR+MHwx
+# CzAJBgNVBAYTAlVTMRMwEQYDVQQIEwpXYXNoaW5ndG9uMRAwDgYDVQQHEwdSZWRt
+# b25kMR4wHAYDVQQKExVNaWNyb3NvZnQgQ29ycG9yYXRpb24xJjAkBgNVBAMTHU1p
+# Y3Jvc29mdCBUaW1lLVN0YW1wIFBDQSAyMDEwMA0GCSqGSIb3DQEBCwUAAgUA66ux
+# bzAiGA8yMDI1MDQxNzE2NTcxOVoYDzIwMjUwNDE4MTY1NzE5WjB3MD0GCisGAQQB
+# hFkKBAExLzAtMAoCBQDrq7FvAgEAMAoCAQACAhHVAgH/MAcCAQACAhJKMAoCBQDr
+# rQLvAgEAMDYGCisGAQQBhFkKBAIxKDAmMAwGCisGAQQBhFkKAwKgCjAIAgEAAgMH
+# oSChCjAIAgEAAgMBhqAwDQYJKoZIhvcNAQELBQADggEBAHGJpCbs8+NdFYBq4L6R
+# 2tbmaLrtcZWGIqO32GTltXMYL408GvCm3DaOyEF/XytviMEPJ9/SWncDRAMH6rsV
+# ICHcrXJs9oWMUjggUK/xzgKwRRoXLAEBmR1c+gqC0rUPmSU7KZKfEaz4BcDaUy04
+# 3v1annaNVupKhVqCN/Ou5IiomtVMI3I5tWwtC5/9P1VHTiTTO50q5spaTCzjdYP5
+# Cj4UQkfYPD0nCCWp801cgLH3lW/hemuqefAT7XmvDRYPqEmSLCbMWlmmCajQQzfb
+# dQOLcPqKqfnjK9jtvR8WQfVOuFfRtt9Tj51u5Unnmly5HG/V/yZKEFKAXEJ4wjdG
+# jGkxggQNMIIECQIBATCBkzB8MQswCQYDVQQGEwJVUzETMBEGA1UECBMKV2FzaGlu
+# Z3RvbjEQMA4GA1UEBxMHUmVkbW9uZDEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBv
+# cmF0aW9uMSYwJAYDVQQDEx1NaWNyb3NvZnQgVGltZS1TdGFtcCBQQ0EgMjAxMAIT
+# MwAAAgO7HlwAOGx0ygABAAACAzANBglghkgBZQMEAgEFAKCCAUowGgYJKoZIhvcN
+# AQkDMQ0GCyqGSIb3DQEJEAEEMC8GCSqGSIb3DQEJBDEiBCDGE54tia6jjo+y6AIE
+# 0cHDD1MUFIWvD93Ts66vfm4nrDCB+gYLKoZIhvcNAQkQAi8xgeowgecwgeQwgb0E
+# IEsD3RtxlvaTxFOZZnpQw0DksPmVduo5SyK9h9w++hMtMIGYMIGApH4wfDELMAkG
+# A1UEBhMCVVMxEzARBgNVBAgTCldhc2hpbmd0b24xEDAOBgNVBAcTB1JlZG1vbmQx
+# HjAcBgNVBAoTFU1pY3Jvc29mdCBDb3Jwb3JhdGlvbjEmMCQGA1UEAxMdTWljcm9z
+# b2Z0IFRpbWUtU3RhbXAgUENBIDIwMTACEzMAAAIDux5cADhsdMoAAQAAAgMwIgQg
+# Ucqh1v2zp4VGQQYs9Oi+yhTm1FVQB0sQWitVOFh019gwDQYJKoZIhvcNAQELBQAE
+# ggIACMyAcCQqGNkP0MduBKV3PZ6e9pUnfhkQqpNU55ULimsNQpRZZ0uuTZ3/cvq3
+# jsEZfk/IQWrAK7l/Bjx3XD/GerrbzbHiFqB2NJINzMlo8/3yA6DRwNYUpedbTe1R
+# oxs2Sy1WLRuuucLfdV9ttYPCC0eYT73uv4sQ1tYWnsWWgp3s7ssfvEukZY7Z4w8V
+# Faji0JiVx5kD5/ZmJsDqyJkarHJmype3vzWy0Y0V19RH8l/xIE7x3UWyPJcPPRpP
+# 2M6q1VDpdTcl5mxpevTPUqZhUEApzQat8HJ/2+KWd665oapgBkOSUJV6jglOIs/8
+# mInppKQHr48y5DL9IfaS0IIQOlpXQuZ7tKCsw3HppQFS4Qis6EG5uvyildrWMwJO
+# hcXJbClAvjqaRI88tq+i0w3l3NuPd/K3dVUtoJBOivxs9lKAqqSjlLM8xhmKHabZ
+# Iu+bi27m1pdrp02BNk1mFhCCn8MpJ9Vft0QuQjfQBmFoCEa1fNU4zJKgPiN8h1EE
+# VLo5xJFS/ZpYpJnxl8Rt4xm2gITnu2usQjEbN7DEIqWgFyRIByKTzicz/5PcEiKe
+# g2+asDvnvOuhbJRHo6SQtVlLBsWa5W3i8QhPsLX45PGY2i7lYhHE5PM6zfPnnVzG
+# GHePneQcxYKutLjagsQ9goAuVJhaOUv5BqHxeM2zdjPixxU=
+# SIG # End signature block
