@@ -1,0 +1,34 @@
+# Local build and tools directories
+createpackage/createpackageV2/LocalTools/
+createpackage/createpackageV2/Build/
+createpackage/createpackageV2/Output/
+createpackage/createpackageV2/Tools/
+
+# Local configuration (user-specific)
+local-config.ps1
+
+# NuGet packages
+*.nupkg
+packages/
+
+# Build outputs
+*.zip
+*.log
+
+# Temporary files
+*.tmp
+*.temp
+~*
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.cache
+
+# Node modules (if any)
+node_modules/
+
+# OS specific
+.DS_Store
+Thumbs.db
