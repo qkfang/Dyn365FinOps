@@ -90,8 +90,6 @@ Write-Host ""
 # Try to download compiler package (may fail if no auth)
 Write-Host "Attempting to download Microsoft.Dynamics.AX.Platform.CompilerPackage..." -ForegroundColor Yellow
 
-$versionArg = ""
-if (-not [string]::IsNullOrEmpty($PlatformVersion)) {
 # Build arguments array for nuget.exe
 $nugetArgs = @(
     "install",
