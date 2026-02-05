@@ -92,16 +92,24 @@ Write-Host "Attempting to download Microsoft.Dynamics.AX.Platform.CompilerPackag
 
 $versionArg = ""
 if (-not [string]::IsNullOrEmpty($PlatformVersion)) {
-    $versionArg = "-Version $PlatformVersion"
+# Build arguments array for nuget.exe
+$nugetArgs = @(
+    "install",
+    "Microsoft.Dynamics.AX.Platform.CompilerPackage",
+    "-OutputDirectory", $packagesDir,
+    "-Source", $NuGetSource
+)
+
+if (-not [string]::IsNullOrEmpty($PlatformVersion)) {
+    $nugetArgs += @("-Version", $PlatformVersion)
     Write-Host "  Specific version requested: $PlatformVersion"
 }
 
-$nugetCmd = "& `"$nugetPath`" install Microsoft.Dynamics.AX.Platform.CompilerPackage -OutputDirectory `"$packagesDir`" -Source `"$NuGetSource`" $versionArg"
 Write-Host "  Command: nuget install Microsoft.Dynamics.AX.Platform.CompilerPackage"
 Write-Host ""
 
 try {
-    Invoke-Expression $nugetCmd
+    & $nugetPath $nugetArgs
     Write-Host "Compiler package downloaded successfully" -ForegroundColor Green
 } catch {
     Write-Warning "Could not download NuGet packages automatically."

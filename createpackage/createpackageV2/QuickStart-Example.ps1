@@ -114,6 +114,7 @@ Write-Host "STEP 3: Creating deployable package" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Create timestamped package filename (format: yyyyMMdd_HHmmss for 24-hour time)
 $packagePath = Join-Path -Path $outputDir -ChildPath "TestPackage_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip"
 
 $createPackageScript = Join-Path -Path $PSScriptRoot -ChildPath "CreatePackageLocal.ps1"
